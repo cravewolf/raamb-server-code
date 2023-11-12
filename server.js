@@ -1,16 +1,20 @@
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb');
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
 
+
+
 const app = express();
+app.use(express.json());
 const server = http.createServer(app);
 const io = socketIO(server, {
-  cors: {
+ cors: {
     origin: "*",
   }
 });
-
+const fs = require('fs');
+const path = require('path');
 
 const connectionUri = 'mongodb+srv://cravewolf:fBQcL0gSMNpOw0zg@cluster0.manlfyy.mongodb.net/?retryWrites=true&w=majority';
 
@@ -28,59 +32,113 @@ function updateSessionActivity(sessionId) {
   userSessions.set(sessionId, session);
   }
 }
+async function handleBookingUpdate(bookingId, status) {
+    const db = mongoClient.db();
+    const collection = db.collection('bookings');
+    // Update booking status based on bookingId
+    await collection.updateOne({ _id: bookingId }, { $set: { status: status } });
+}
 
-io.on('connection', (socket) => {
-  // ... other event handlers ...
+// Function to fetch a booking by its ID
+async function getBookingById(bookingId) {
+  console.log("Fetching booking with ID:", bookingId);
 
-  // Node.js pseudo-code using a MongoDB client
-socket.on('bookMechanic', async (bookingData) => {
-  console.log(bookingData);
+  const db = mongoClient.db();
+  const bookings = db.collection('bookings');
+
   try {
-    const booking = await db.collection('bookings').insertOne({
-      userId: bookingData.userId,
-      mechanicId: bookingData.mechanicId,
-      userLocation: bookingData.userLocation,
-      bookingTime: new Date(bookingData.bookingTime),
-      status: 'pending', // Default status
-      // Add other fields as needed
-    });
+      // Convert string ID to ObjectId
+      const objectId = new ObjectId(bookingId);
+      const booking = await bookings.findOne({ _id: objectId }); 
+      console.log("Fetched booking:", booking);
 
-    socket.emit('bookingStatus', { status: 'pending', bookingId: booking.insertedId });
+      return booking;
   } catch (error) {
-    console.error('Booking error:', error);
-    socket.emit('bookingStatus', { status: 'error', message: 'Could not create booking' });
+      console.error("Error fetching booking:", error);
+      return null;
+  }
+}
+async function updateUserProfilePicture(userId, imagePath) {
+  const db = mongoClient.db();
+  const usersCollection = db.collection('users');
+  console.log('image');
+
+  // Update user's profile picture based on userId
+  await usersCollection.updateOne(
+      { _id: userId },
+      { $set: { profilePicture: imagePath } }
+  );
+}
+app.post('/uploadProfilePicture', async (req, res) => {
+  try {
+    const { userId, imageBase64 } = req.body;
     
+    // Decode the base64 image
+    const buffer = Buffer.from(imageBase64, 'base64');
+    // Create a unique filename for the image
+    const imagePath = path.join(__dirname, 'uploads', `${userId}-${Date.now()}.jpg`);
+    // Save the image to the filesystem
+    fs.writeFileSync(imagePath, buffer);
+
+    // Convert userId to ObjectId if necessary
+    const objectId = new ObjectId(userId);
+
+    // Update the user's profile picture in the database
+    await updateUserProfilePicture(objectId, imagePath);
+
+    res.status(200).json({ message: 'Profile picture updated successfully', imageUrl: imagePath });
+  } catch (error) {
+    console.error('Error updating profile picture:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+app.post('/submitVerification', async (req, res) => {
+  try {
+    // Extract verification data from request body
+    const verificationData = req.body;
+
+    // Access the MongoDB 'verifications' collection
+    const db = mongoClient.db();
+    const verificationsCollection = db.collection('verifications');
+
+    // Insert the verification data into the collection
+    const result = await verificationsCollection.insertOne(verificationData);
+
+    // Send a success response
+    res.status(200).json({ message: 'Verification submitted successfully', id: result.insertedId });
+  } catch (error) {
+    console.error('Error submitting verification:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
 
-  // Handling mechanic's response to a booking
-  socket.on('mechanicResponse', async (response) => {
-    try {
-      console.log('Mechanic Response:', response);
-      const bookingsCollection = mongoClient.db("bookings").collection("bookingRecords");
-      
-      // Convert string ID to MongoDB ObjectId
-      const bookingId = new MongoClient.ObjectID(response.bookingId);
 
-      // Update the booking status based on mechanic's response
-      await bookingsCollection.updateOne(
-        { _id: bookingId },
-        { $set: { status: response.status } }
-      );
+// Updated logTransaction function to include mechanicId
+async function logTransaction(bookingId, action) {
+  const booking = await getBookingById(bookingId);
 
-      // Notify the user about the mechanic's response
-      io.to(response.userId).emit('bookingStatus', { status: response.status });
-    } catch (error) {
-      console.error('Error handling mechanic response:', error);
-    }
+  if (!booking) {
+      console.warn('Booking not found for ID:', bookingId);
+      // You could choose to return here or take alternative action
+      return { error: 'Booking not found', bookingId };
+  }
+
+  const mechanicId = booking.mechanicId; // Retrieve mechanicId from the booking
+  const db = mongoClient.db();
+  const transactions = db.collection('transactions');
+
+  await transactions.insertOne({
+      bookingId,
+      mechanicId, // Include mechanicId in the transaction
+      action,
+      timestamp: new Date()
   });
 
-  // ... other event handlers ...
-});
+  return { success: true, bookingId, mechanicId, action }; // Optionally return success confirmation
+}
 
 
-// ... rest of your server code
 
 
 // Function to check and update the session status
@@ -137,33 +195,80 @@ async function updateUserStatusInDb(sessionIds, isLogged) {
   }
 }
 
+async function bookMechanic(bookingData) {
+    try {
+        
+        const collection = mongoClient.db().collection('bookings');
 
-
-io.on('connection', socket => {
-  console.log('a user connected:', socket.id);
-
-  socket.on('sendMessage', message => {
-    console.log('Message received:', message);
-    // Ensure the message object has the expected structure
-    if (typeof message === 'object' && message.content && message.sender) {
-      // Echo the message back with the same structure
-      io.emit('receiveMessage', {
-        content: message.content,
-        sender: message.sender
-      });
-    } else {
-      console.error('Message object structure is incorrect:', message);
+        // Insert the booking data into the 'bookings' collection
+        const result = await collection.insertOne(bookingData);
+        return result;
+    } catch (error) {
+        console.error("Error in bookMechanic function:", error);
+        throw error; // Rethrowing the error to be handled by the caller
     }
-  });
+}
 
-  socket.on('disconnect', () => {
-    console.log('user disconnected');
-  });
-});
+
+
+
+
+
+// io.on('connection', socket => {
+ 
+
+  // ... other event handlers ...
+
 
 
 io.on('connection', (socket) => {
   console.log('Client connected');
+
+  socket.on('requestTransactions', async () => {
+    try {
+      const db = mongoClient.db();
+      const transactionsCollection = db.collection('transactions');
+  
+      const transactions = await transactionsCollection.aggregate([
+        {
+          $lookup: {
+            from: "users",
+            let: { mechanicId: "$mechanicId" }, // Define mechanicId as a variable for the pipeline
+            pipeline: [
+              { $match: { $expr: { $eq: ["$_id", "$$mechanicId"] } } }, // Use the variable in a match stage
+              { $project: { firstName: 1, lastName: 1 } }
+            ],
+            as: "mechanicDetails"
+          }
+        },
+        {
+          $unwind: {
+            path: "$mechanicDetails",
+            preserveNullAndEmptyArrays: true // Preserve transactions without mechanic details
+          }
+        },
+        {
+          $project: {
+            bookingId: 1,
+            mechanicId: 1,
+            action: 1,
+            timestamp: 1,
+            "mechanicDetails.firstName": 1,
+            "mechanicDetails.lastName": 1
+          }
+        }
+      ]).toArray();
+  
+      socket.emit('transactionsData', transactions);
+    } catch (error) {
+      console.error('Error fetching transactions:', error);
+      socket.emit('error', error.message);
+    }
+  });
+  
+  
+
+
 
   socket.on('mechanicLocationUpdate', (data) => {
     console.log(data, "mechannicupdate")
@@ -218,15 +323,184 @@ io.on('connection', (socket) => {
     updateSessionActivity(data.userId)
   });
 
+  socket.on('sendMessage', async (messageData) => {
+    console.log('New message event received', messageData);
+    try {
+      // Insert the message into the database
+      const result = await mongoClient.db().collection('messages').insertOne({
+        senderId: messageData.senderId, // Assume senderId and receiverId are strings
+        receiverId: messageData.receiverId,
+        content: messageData.content,
+        timestamp: new Date(),
+        read: false
+      });
+  
+      console.log('Message saved to DB with ID:', result.insertedId);
+  
+      // Emit an event to the receiver with the new message
+      io.to(messageData.receiverId).emit('receiveMessage', {
+        _id: result.insertedId.toString(), // Send the string representation of the ObjectId
+        content: messageData.content,
+        senderId: messageData.senderId,
+        timestamp: new Date() // Use the timestamp from when the message was saved
+      });
+    } catch (error) {
+      console.error('Error sending message:', error);
+      // Optionally, emit back to the sender that there was an error
+      socket.emit('sendMessageError', { error: 'Message could not be saved.' });
+    }
+  });
+
 
   socket.on('disconnect', () => {
     console.log(`Client disconnected`);
   });
+
+  // Node.js server-side code using Socket.IO
+socket.on('requestChatHistory', async (data) => {
+  try {
+    const { sessionId, user } = data;
+    const db = mongoClient.db();
+    const collection = db.collection('messages');
+
+    const messagesDocuments = await collection.find({
+      '$or': [
+        { 'senderId': sessionId, 'receiverId': user },
+        { 'senderId': user, 'receiverId': sessionId },
+      ]
+    }).sort({ timestamp: 1 }).toArray(); // Sort by timestamp to get messages in order
+
+    // Emit the chat history back to the requesting client
+    socket.emit('chatHistoryResponse', messagesDocuments);
+  } catch (error) {
+    console.error('Error fetching chat history:', error);
+    // Optionally, emit back to the client that there was an error
+    socket.emit('chatHistoryError', { error: 'Could not fetch chat history.' });
+  }
+});
+
+socket.on('request-users', async () => {
+    try {
+      const db = mongoClient.db();
+      const collection = db.collection('users');
+      const users = await collection.find({}).toArray();
+
+      // Emit the 'users' event to the socket client with the users data
+      socket.emit('users', users);
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      socket.emit('error', 'Error fetching users');
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Client disconnected');
+  });
+
+  socket.on('bookMechanic', async (bookingData) => {
+    console.log('booking');
+        try {
+            const bookingResult = await bookMechanic(bookingData);
+            socket.emit('booking-confirmation', bookingResult);
+            console.log('booking-confirmed');
+        } catch (error) {
+            socket.emit('booking-error', error.message);
+            console.error('booking error');
+        }
+    });
+    socket.on('getBookings', async () => {
+    try {
+        const db = mongoClient.db(); // Make sure mongoClient is correctly initialized and connected
+        const collection = db.collection('bookings'); // Access the 'bookings' collection
+
+        // Fetch bookings from the collection
+       const bookings = await collection.aggregate([
+        {
+          $lookup: {
+            from: "users",
+            localField: "userId",
+            foreignField: "_id",
+            as: "userDetails"
+          }
+        },
+        {
+          $unwind: "$userDetails"
+        },
+        {
+          $project: {
+            _id: 1,
+            mechanicId: 1,
+            userId: 1,
+            userLocation: 1,
+            bookingTime: 1,
+            "userDetails.firstName": 1, // Include firstName from the "users" collection
+            "userDetails.lastName": 1  // Optionally include other user details
+          }
+        }
+      ]).toArray()
+      console.log('aggre'); // This retrieves all bookings
+
+        // Emit the fetched bookings to the client
+        socket.emit('bookingsData', bookings);
+        console.log('fetchbook')
+    } catch (error) {
+        console.error('Error fetching bookings:', error);
+        socket.emit('error', error.message); // Emitting an error message to the client
+    }
+});
+socket.on('acceptBooking', async (bookingId) => {
+        try {
+            await handleBookingUpdate(bookingId, 'accepted');
+            socket.emit('bookingResponse', { status: 'Accepted', bookingId });
+            // Log the transaction
+            logTransaction(bookingId, 'On-going');
+            console.log('accep');
+        } catch (error) {
+            socket.emit('bookingError', error.message);
+        }
+    });
+
+    socket.on('declineBooking', async (bookingId) => {
+        try {
+            await handleBookingUpdate(bookingId, 'declined');
+            socket.emit('bookingResponse', { status: 'Declined', bookingId });
+            // Log the transaction
+            logTransaction(bookingId, 'declined');
+        } catch (error) {
+            socket.emit('bookingError', error.message);
+        }
+    });
+    socket.on('markBookingComplete', async (data) => {
+      const { bookingId } = data; // Extract the bookingId from the data object
+    
+      try {
+        // Update the booking status to 'complete'
+        await handleBookingUpdate(bookingId, 'complete');
+    
+        // Log the transaction with action set to 'Complete'
+        const logResult = await logTransaction(bookingId, 'Complete');
+        
+        if (logResult.error) {
+          // Handle error in logging transaction
+          socket.emit('bookingCompleteError', logResult);
+        } else {
+          // Emit a confirmation event to the client
+          socket.emit('bookingCompleteConfirmation', { bookingId, logResult });
+        }
+      } catch (error) {
+        console.error('Error in markBookingComplete:', error);
+        socket.emit('bookingCompleteError', { error: error.message, bookingId });
+      }
+    });
+    
+    
+
+
 });
 
 async function connectToMongo() {
   try {
-    mongoClient = await MongoClient.connect(connectionUri, { useNewUrlParser: true });
+    mongoClient = await MongoClient.connect(connectionUri, { useNewUrlParser: true, useUnifiedTopology: true});
     console.log('Connected to MongoDB successfully!');
   } catch (error) {
     console.error('Error connecting to MongoDB:', error);
@@ -237,6 +511,7 @@ async function connectToMongo() {
 setInterval(() => {
 
   checkSessionStatus();
+  
   
 }, 5000);
 
