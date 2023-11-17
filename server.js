@@ -58,6 +58,13 @@ async function getBookingById(bookingId) {
       return null;
   }
 }
+async function getActionFromTransactions(bookingId) {
+  const db = mongoClient.db();
+  const transaction = db.collection('transactions').findOne({ bookingId: bookingId });
+
+  return transaction ? transaction.action : null;
+}
+
 async function updateUserProfilePicture(userId, imagePath) {
   const db = mongoClient.db();
   const usersCollection = db.collection('users');
@@ -111,6 +118,8 @@ app.post('/submitVerification', async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
+
 
 
 
@@ -310,6 +319,18 @@ io.on('connection', (socket) => {
     // Broadcast the location update to all mechanic roles
 
   });
+  socket.on('requestBookingStatus', async (data) => {
+    console.log('iwerk');
+    const bookingId = data.bookingId;
+
+    // Fetch the action from the transactions collection
+    const action = await getActionFromTransactions(bookingId);
+
+    const status = await handleBookingUpdate(bookingId);
+    console.log('iwerking');
+    socket.emit('bookingStatus', { status, action });
+});
+
 
   
   socket.on('driverUserStatusUpdate', (data) => {
@@ -392,6 +413,23 @@ socket.on('request-users', async () => {
       socket.emit('error', 'Error fetching users');
     }
   });
+  socket.on('request-verification-requests', async () => {
+    console.log('Received request for verification requests');
+    try {
+      const db = mongoClient.db();
+      const collection = db.collection('verifications');
+      const verificationRequests = await collection.find({}).toArray();
+  
+      socket.emit('verification-requests', verificationRequests);
+      console.log('got it');
+    } catch (error) {
+      console.error('Error fetching verification requests:', error);
+      // Emitting error details for debugging; be cautious in a production environment
+      socket.emit('error', `Error fetching verification requests: ${error.message}`);
+    }
+  });
+  
+  
 
   socket.on('disconnect', () => {
     console.log('Client disconnected');
@@ -403,6 +441,7 @@ socket.on('request-users', async () => {
             const bookingResult = await bookMechanic(bookingData);
             socket.emit('booking-confirmation', bookingResult);
             console.log('booking-confirmed');
+            
         } catch (error) {
             socket.emit('booking-error', error.message);
             console.error('booking error');
@@ -470,28 +509,40 @@ socket.on('acceptBooking', async (bookingId) => {
             socket.emit('bookingError', error.message);
         }
     });
+  //   socket.on('requestBookingStatus', async (data) => {
+  //     const bookingId = data.bookingId;
+  //     const status = await getCurrentBookingStatus(bookingId);
+  //     socket.emit('bookingStatus', status);
+  // });
+
+    
     socket.on('markBookingComplete', async (data) => {
-      const { bookingId } = data; // Extract the bookingId from the data object
-    
+      console.log('complete');
+      console.log('Received data:', data); // Debug: Print received data
+  
       try {
-        // Update the booking status to 'complete'
-        await handleBookingUpdate(bookingId, 'complete');
-    
-        // Log the transaction with action set to 'Complete'
-        const logResult = await logTransaction(bookingId, 'Complete');
-        
-        if (logResult.error) {
-          // Handle error in logging transaction
-          socket.emit('bookingCompleteError', logResult);
-        } else {
-          // Emit a confirmation event to the client
-          socket.emit('bookingCompleteConfirmation', { bookingId, logResult });
-        }
+          const { bookingId } = data; // Extract the bookingId from the data object
+          console.log('Booking ID:', bookingId); // Debug: Print the booking ID
+  
+          // Update the booking status to 'complete'
+          await handleBookingUpdate(bookingId, 'complete');
+  
+          // Log the transaction with action set to 'Complete'
+          const logResult = await logTransaction(bookingId, 'Complete');
+  
+          if (logResult.error) {
+              // Handle error in logging transaction
+              socket.emit('bookingCompleteError', logResult);
+          } else {
+              // Emit a confirmation event to the client
+              socket.emit('bookingCompleteConfirmation', { bookingId, logResult });
+          }
       } catch (error) {
-        console.error('Error in markBookingComplete:', error);
-        socket.emit('bookingCompleteError', { error: error.message, bookingId });
+          console.error('Error in markBookingComplete:', error);
+          socket.emit('bookingCompleteError', { error: error.message, bookingId });
       }
-    });
+  });
+  
     
     
 
