@@ -628,7 +628,8 @@ setInterval(() => {
 }, 5000);
 
 
-const port = 3000;
+const port = process.env.PORT || 3000;
+
 server.listen(port, async() => {
   await connectToMongo();
   console.log(`Server is running on port ${port}`);
