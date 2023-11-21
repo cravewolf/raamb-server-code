@@ -2,6 +2,7 @@ const { MongoClient, ObjectId } = require('mongodb');
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
+const cors = require('cors');
 
 
 
@@ -22,6 +23,7 @@ const userSessions = new Map();
 
 let mongoClient;
 
+app.use(cors());
 
 function updateSessionActivity(sessionId) {
   const currentTime = Date.now();
@@ -99,6 +101,50 @@ app.post('/uploadProfilePicture', async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+app.post('/users', async (req, res) => {
+  console.log('ers');
+  try {
+    const newUser = new User(req.body);
+    await newUser.save();
+    res.status(201).send(newUser);
+  } catch (error) {
+    res.status(500).send(error);
+  }
+});
+app.get('/users', async (req, res) => {
+  console.log('youse');
+  try {
+    // Assuming mongoClient is already connected to your MongoDB instance
+    const db = mongoClient.db();
+    const collection = db.collection('users');
+    const users = await collection.find({}).toArray();
+
+    // Send the users as JSON response
+    res.json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    // Handle errors with a 500 Internal Server Error response
+    res.status(500).send('Error fetching users');
+  }
+});
+app.get('/verification-requests', async (req, res) => {
+  try {
+    // Assuming mongoClient is already connected to your MongoDB instance
+    const db = mongoClient.db();
+    const collection = db.collection('verificationRequests');
+
+    // Fetching all documents from the 'verificationRequests' collection
+    const verificationRequests = await collection.find({}).toArray();
+
+    // Sending the fetched documents as a JSON response
+    res.json(verificationRequests);
+  } catch (error) {
+    console.error('Error fetching verification requests:', error);
+    res.status(500).send({ message: 'Error fetching verification requests' });
+  }
+});
+
+
 app.post('/submitVerification', async (req, res) => {
   try {
     // Extract verification data from request body
@@ -133,18 +179,20 @@ async function logTransaction(bookingId, action) {
       return { error: 'Booking not found', bookingId };
   }
 
-  const mechanicId = booking.mechanicId; // Retrieve mechanicId from the booking
+  const mechanicId = booking.mechanicId;
+  const userId = booking.userId; // Retrieve mechanicId from the booking
   const db = mongoClient.db();
   const transactions = db.collection('transactions');
 
   await transactions.insertOne({
       bookingId,
+      userId,
       mechanicId, // Include mechanicId in the transaction
       action,
       timestamp: new Date()
   });
 
-  return { success: true, bookingId, mechanicId, action }; // Optionally return success confirmation
+  return { success: true, bookingId,userId, mechanicId, action }; // Optionally return success confirmation
 }
 
 
@@ -232,8 +280,14 @@ async function bookMechanic(bookingData) {
 
 io.on('connection', (socket) => {
   console.log('Client connected');
+  
+  socket.on('register', (userId) => {
+    userSessions.set(userId, socket.id);
+    console.log('registered');
+  });
 
   socket.on('requestTransactions', async () => {
+    console.log('reqd');
     try {
       const db = mongoClient.db();
       const transactionsCollection = db.collection('transactions');
@@ -260,6 +314,7 @@ io.on('connection', (socket) => {
           $project: {
             bookingId: 1,
             mechanicId: 1,
+            userId: 1,
             action: 1,
             timestamp: 1,
             "mechanicDetails.firstName": 1,
@@ -269,6 +324,7 @@ io.on('connection', (socket) => {
       ]).toArray();
   
       socket.emit('transactionsData', transactions);
+      console.log ('booii');
     } catch (error) {
       console.error('Error fetching transactions:', error);
       socket.emit('error', error.message);
@@ -349,25 +405,30 @@ io.on('connection', (socket) => {
     try {
       // Insert the message into the database
       const result = await mongoClient.db().collection('messages').insertOne({
-        senderId: messageData.senderId, // Assume senderId and receiverId are strings
+        senderId: messageData.senderId,
         receiverId: messageData.receiverId,
         content: messageData.content,
         timestamp: new Date(),
         read: false
       });
-  
       console.log('Message saved to DB with ID:', result.insertedId);
   
-      // Emit an event to the receiver with the new message
-      io.to(messageData.receiverId).emit('receiveMessage', {
-        _id: result.insertedId.toString(), // Send the string representation of the ObjectId
-        content: messageData.content,
-        senderId: messageData.senderId,
-        timestamp: new Date() // Use the timestamp from when the message was saved
-      });
+      // Retrieve the receiver's socket ID using their user ID
+      const receiverSocketId = userSessions.get(messageData.receiverId);
+      if (receiverSocketId) {
+        // Emit the message to the receiver using their socket ID
+        io.to(receiverSocketId).emit('receiveMessage', {
+          _id: result.insertedId.toString(),
+          content: messageData.content,
+          senderId: messageData.senderId,
+          timestamp: new Date()
+        });
+        console.log('mhie', receiverSocketId);
+      } else {
+        console.log(`Receiver ${messageData.receiverId} is not connected.`);
+      }
     } catch (error) {
       console.error('Error sending message:', error);
-      // Optionally, emit back to the sender that there was an error
       socket.emit('sendMessageError', { error: 'Message could not be saved.' });
     }
   });
