@@ -25,6 +25,7 @@ let mongoClient;
 
 app.use(cors());
 
+
 function updateSessionActivity(sessionId) {
   const currentTime = Date.now();
   const session = userSessions.get(sessionId);
@@ -78,6 +79,7 @@ async function updateUserProfilePicture(userId, imagePath) {
       { $set: { profilePicture: imagePath } }
   );
 }
+
 app.post('/uploadProfilePicture', async (req, res) => {
   try {
     const { userId, imageBase64 } = req.body;
