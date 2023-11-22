@@ -58,6 +58,7 @@ async function getBookingById(bookingId) {
       return booking;
   } catch (error) {
       console.error("Error fetching booking:", error);
+      
       return null;
   }
 }
@@ -605,6 +606,32 @@ socket.on('acceptBooking', async (bookingId) => {
           socket.emit('bookingCompleteError', { error: error.message, bookingId });
       }
   });
+  socket.on('deleteBooking', async (data) => {
+    console.log('delete');
+    try {
+        const { bookingId } = data;
+
+        // Connect to MongoDB
+        
+        const db = mongoClient.db(); // Make sure mongoClient is correctly initialized and connected
+        const collection = db.collection('bookings'); // Access the 'bookings' collection
+
+        // Delete the booking
+        const result = await collection.deleteOne(bookingId);
+        console.log(data);
+        if (result.deletedCount === 0) {
+            socket.emit('bookingDeleteResponse', { success: false, message: 'Booking not found' });
+            return;
+        }
+
+        socket.emit('bookingDeleteResponse', { success: true, message: 'Booking removed successfully' });
+    } catch (error) {
+        console.error('Error deleting booking:', error);
+        socket.emit('bookingDeleteResponse', { success: false, message: 'Error deleting booking' });
+   
+    }
+});
+
   
     
     
